@@ -103,3 +103,7 @@ Respons berisi `errors`, `warnings` (beserta posisi baris/kolom), `recommendatio
 - **`UPDATE`/`DELETE` hanya mendapat rekomendasi kolom kunci**, tanpa `INCLUDE`.
 - **`OR` lintas kolom hanya diberi peringatan**, tidak dibuatkan rekomendasi.
 - **MySQL tidak punya `INCLUDE`.** Kolom payload ditambahkan ke ujung key, kecuali kolom TEXT/BLOB/JSON.
+
+## Lisensi
+
+[MIT](LICENSE)
