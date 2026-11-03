@@ -1,0 +1,173 @@
+{
+  "dialect": "POSTGRESQL",
+  "schemas": {
+    "shop": {
+      "dialect": "POSTGRESQL",
+      "tables": {
+        "public.orders": {
+          "tableName": "orders",
+          "columns": {
+            "id": { "name": "id", "dataType": "bigint", "isNullable": false, "isPrimaryKey": true },
+            "customer_id": { "name": "customer_id", "dataType": "bigint", "isNullable": false, "isPrimaryKey": false },
+            "order_date": { "name": "order_date", "dataType": "timestamptz", "isNullable": false, "isPrimaryKey": false },
+            "status": { "name": "status", "dataType": "text", "isNullable": false, "isPrimaryKey": false },
+            "total": { "name": "total", "dataType": "numeric(18,2)", "isNullable": false, "isPrimaryKey": false }
+          },
+          "indexes": [
+            { "indexName": "orders_pkey", "isUnique": true, "keyColumns": ["id"], "includeColumns": [] },
+            { "indexName": "ix_orders_customer_id", "isUnique": false, "keyColumns": ["customer_id"], "includeColumns": [] }
+          ]
+        },
+        "public.customers": {
+          "tableName": "customers",
+          "columns": {
+            "id": { "name": "id", "dataType": "bigint", "isNullable": false, "isPrimaryKey": true },
+            "name": { "name": "name", "dataType": "text", "isNullable": false, "isPrimaryKey": false },
+            "email": { "name": "email", "dataType": "text", "isNullable": false, "isPrimaryKey": false },
+            "country": { "name": "country", "dataType": "char(2)", "isNullable": false, "isPrimaryKey": false }
+          },
+          "indexes": [
+            { "indexName": "customers_pkey", "isUnique": true, "keyColumns": ["id"], "includeColumns": [] },
+            { "indexName": "ux_customers_email", "isUnique": true, "keyColumns": ["email"], "includeColumns": [] }
+          ]
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "equality with INCLUDE",
+      "query": "SELECT id, total FROM orders WHERE customer_id = $1",
+      "expected": [{ "table": "orders", "key": ["customer_id"], "include": ["id", "total"],
+        "ddl": ["CREATE INDEX ix_orders_customer_id", "ON orders (customer_id)", "INCLUDE (id, total);"] }]
+    },
+    {
+      "name": "unquoted identifiers fold to lower case",
+      "query": "SELECT Id FROM Orders WHERE OrderDate >= $1 AND Status = 'paid'",
+      "expected": [{ "table": "orders", "key": ["status", "orderdate"], "include": ["id"],
+        "ddl": ["CREATE INDEX ix_orders_status_orderdate", "ON orders (status, orderdate)", "INCLUDE (id);"] }]
+    },
+    {
+      "name": "quoted identifiers keep their case and stay quoted",
+      "query": "SELECT \"Id\" FROM public.\"Orders\" WHERE \"CustomerId\" = 1",
+      "expected": [{ "table": "Orders", "key": ["CustomerId"], "include": ["Id"],
+        "ddl": ["CREATE INDEX ix_orders_customerid", "ON public.\"Orders\" (\"CustomerId\")", "INCLUDE (\"Id\");"] }]
+    },
+    {
+      "name": "LIKE followed by AND (parser precedence workaround)",
+      "query": "SELECT id FROM customers WHERE name LIKE 'Jo%' AND country = 'ID'",
+      "expected": [{ "table": "customers", "key": ["country", "name"], "include": ["id"] }]
+    },
+    {
+      "name": "NOT followed by AND (parser precedence workaround)",
+      "query": "SELECT id FROM orders WHERE NOT is_deleted AND customer_id = 5",
+      "expected": [{ "table": "orders", "key": ["is_deleted", "customer_id"], "include": ["id"] }]
+    },
+    {
+      "name": "parenthesized NOT is left alone",
+      "query": "SELECT id FROM orders WHERE NOT (status = 'a' AND total > 5) AND customer_id = 5",
+      "expected": [{ "table": "orders", "key": ["customer_id"], "include": ["id", "status", "total"] }]
+    },
+    {
+      "name": "ILIKE cannot use a B-tree index",
+      "query": "SELECT id FROM customers WHERE email ILIKE 'a%'",
+      "expected": [],
+      "warnings": ["NON_SARGABLE"]
+    },
+    {
+      "name": "cast on the column is non-sargable",
+      "query": "SELECT id FROM orders WHERE order_date::date = $1",
+      "expected": [],
+      "warnings": ["NON_SARGABLE"]
+    },
+    {
+      "name": "function on the column is non-sargable",
+      "query": "SELECT id FROM customers WHERE lower(email) = $1",
+      "expected": [],
+      "warnings": ["NON_SARGABLE"]
+    },
+    {
+      "name": "join with ORDER BY DESC and LIMIT",
+      "query": "SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id WHERE c.country = 'ID' ORDER BY o.order_date DESC LIMIT 20",
+      "expected": [
+        { "table": "orders", "key": ["customer_id", "order_date DESC"], "include": ["id"] },
+        { "table": "customers", "key": ["country", "id"], "include": ["name"] }
+      ]
+    },
+    {
+      "name": "correlated EXISTS",
+      "query": "SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'open')",
+      "expected": [
+        { "table": "customers", "key": ["id"], "include": ["name"] },
+        { "table": "orders", "key": ["status", "customer_id"], "include": [] }
+      ]
+    },
+    {
+      "name": "IN subquery",
+      "query": "SELECT name FROM customers WHERE id IN (SELECT customer_id FROM orders WHERE total > 100)",
+      "expected": [
+        { "table": "customers", "key": ["id"], "include": ["name"] },
+        { "table": "orders", "key": ["total"], "include": ["customer_id"] }
+      ]
+    },
+    {
+      "name": "UPDATE",
+      "query": "UPDATE orders SET status = 'closed' WHERE customer_id = 3 AND order_date < $1",
+      "expected": [{ "table": "orders", "key": ["customer_id", "order_date"], "include": [] }]
+    },
+    {
+      "name": "DELETE",
+      "query": "DELETE FROM orders WHERE status = 'draft'",
+      "expected": [{ "table": "orders", "key": ["status"], "include": [] }]
+    },
+    {
+      "name": "CTE names are not tables",
+      "query": "WITH x AS (SELECT customer_id FROM orders WHERE status = 'a') SELECT customer_id FROM x WHERE customer_id = 1",
+      "expected": [{ "table": "orders", "key": ["status"], "include": ["customer_id"] }]
+    },
+    {
+      "name": "SELECT * disables covering",
+      "query": "SELECT * FROM orders WHERE customer_id = 1",
+      "expected": [{ "table": "orders", "key": ["customer_id"], "include": [] }],
+      "warnings": ["SELECT_STAR"]
+    },
+    {
+      "name": "OR across columns",
+      "query": "SELECT id FROM orders WHERE status = 'a' OR customer_id = 1",
+      "expected": [],
+      "warnings": ["OR_PREDICATE"]
+    },
+    {
+      "name": "existing index covers the key",
+      "schema": "shop",
+      "query": "SELECT customer_id FROM orders WHERE customer_id = 1",
+      "expected": [{ "table": "orders", "key": ["customer_id"], "include": [], "covered": "full" }]
+    },
+    {
+      "name": "existing index is widened in a transaction",
+      "schema": "shop",
+      "query": "SELECT total FROM orders WHERE customer_id = 1",
+      "expected": [{ "table": "orders", "key": ["customer_id"], "include": ["total"], "covered": "partial",
+        "ddl": ["BEGIN;", "DROP INDEX ix_orders_customer_id;", "CREATE INDEX ix_orders_customer_id", "ON orders (customer_id)", "INCLUDE (total);", "COMMIT;"] }]
+    },
+    {
+      "name": "primary-key lookup returns one row: covered",
+      "schema": "shop",
+      "query": "SELECT name, country FROM customers WHERE id = $1",
+      "expected": [{ "table": "customers", "key": ["id"], "include": ["name", "country"], "covered": "full" }]
+    },
+    {
+      "name": "unique-index lookup returns one row: covered",
+      "schema": "shop",
+      "query": "SELECT name FROM customers WHERE email = $1",
+      "expected": [{ "table": "customers", "key": ["email"], "include": ["name"], "covered": "full" }]
+    },
+    {
+      "name": "a UNIQUE index is not dropped to widen it",
+      "schema": "shop",
+      "query": "SELECT name FROM customers WHERE email > $1",
+      "expected": [{ "table": "customers", "key": ["email"], "include": ["name"],
+        "ddl": ["CREATE INDEX ix_customers_email", "ON customers (email)", "INCLUDE (name);"] }]
+    }
+  ]
+}

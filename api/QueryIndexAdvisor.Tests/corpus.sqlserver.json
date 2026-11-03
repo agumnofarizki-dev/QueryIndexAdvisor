@@ -1,0 +1,176 @@
+{
+  "schemas": {
+    "shop": {
+      "dialect": "SQLSERVER",
+      "tables": {
+        "dbo.Orders": {
+          "tableName": "Orders",
+          "columns": {
+            "Id": { "name": "Id", "dataType": "int", "isNullable": false, "isPrimaryKey": true },
+            "CustomerId": { "name": "CustomerId", "dataType": "int", "isNullable": false, "isPrimaryKey": false },
+            "OrderDate": { "name": "OrderDate", "dataType": "datetime2", "isNullable": false, "isPrimaryKey": false },
+            "Status": { "name": "Status", "dataType": "varchar(20)", "isNullable": false, "isPrimaryKey": false },
+            "Total": { "name": "Total", "dataType": "decimal(18,2)", "isNullable": false, "isPrimaryKey": false }
+          },
+          "indexes": [
+            { "indexName": "IX_Orders_CustomerId_OrderDate", "isUnique": false, "keyColumns": ["CustomerId", "OrderDate"], "includeColumns": ["Total"] },
+            { "indexName": "IX_Orders_Status", "isUnique": false, "keyColumns": ["Status"], "includeColumns": [] }
+          ]
+        },
+        "dbo.Customers": {
+          "tableName": "Customers",
+          "columns": {
+            "Id": { "name": "Id", "dataType": "int", "isNullable": false, "isPrimaryKey": true },
+            "Name": { "name": "Name", "dataType": "nvarchar(200)", "isNullable": false, "isPrimaryKey": false },
+            "Country": { "name": "Country", "dataType": "char(2)", "isNullable": false, "isPrimaryKey": false }
+          },
+          "indexes": []
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "single equality with covering columns",
+      "query": "SELECT Id, Total FROM Orders WHERE CustomerId = @c",
+      "expected": [{ "table": "Orders", "key": ["CustomerId"], "include": ["Id", "Total"] }]
+    },
+    {
+      "name": "equality before range",
+      "query": "SELECT Id, Total FROM Orders WHERE OrderDate >= '2024-01-01' AND CustomerId = 5",
+      "expected": [{ "table": "Orders", "key": ["CustomerId", "OrderDate"], "include": ["Id", "Total"] }]
+    },
+    {
+      "name": "only first range column is a key, the rest go to include",
+      "query": "SELECT Id FROM Orders WHERE Status = 'Open' AND OrderDate > @d AND Total > 100",
+      "expected": [{ "table": "Orders", "key": ["Status", "OrderDate"], "include": ["Id", "Total"] }]
+    },
+    {
+      "name": "order by extends the key when there is no range",
+      "query": "SELECT Id FROM Orders WHERE CustomerId = 1 ORDER BY OrderDate DESC",
+      "expected": [{ "table": "Orders", "key": ["CustomerId", "OrderDate DESC"], "include": ["Id"] }]
+    },
+    {
+      "name": "order by after a range goes to include",
+      "query": "SELECT Id FROM Orders WHERE CustomerId = 1 AND OrderDate > @d ORDER BY Total",
+      "expected": [{ "table": "Orders", "key": ["CustomerId", "OrderDate"], "include": ["Id", "Total"] }]
+    },
+    {
+      "name": "group by follows equality",
+      "query": "SELECT CustomerId, COUNT(*) FROM Orders WHERE Status = 'Paid' GROUP BY CustomerId",
+      "expected": [{ "table": "Orders", "key": ["Status", "CustomerId"], "include": [] }]
+    },
+    {
+      "name": "join: filter equality leads, join column follows",
+      "query": "SELECT o.Id, c.Name FROM Orders o JOIN Customers c ON c.Id = o.CustomerId WHERE c.Country = 'ID'",
+      "expected": [
+        { "table": "Orders", "key": ["CustomerId"], "include": ["Id"] },
+        { "table": "Customers", "key": ["Country", "Id"], "include": ["Name"] }
+      ]
+    },
+    {
+      "name": "IN list counts as equality",
+      "query": "SELECT Id FROM Orders WHERE OrderDate > @d AND Status IN ('A', 'B')",
+      "expected": [{ "table": "Orders", "key": ["Status", "OrderDate"], "include": ["Id"] }]
+    },
+    {
+      "name": "OR on the same column behaves like IN",
+      "query": "SELECT Id FROM Orders WHERE Status = 'A' OR Status = 'B'",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": ["Id"] }]
+    },
+    {
+      "name": "OR across columns is not seekable",
+      "query": "SELECT Id FROM Orders WHERE Status = 'A' OR CustomerId = 3",
+      "expected": [],
+      "warnings": ["OR_PREDICATE"]
+    },
+    {
+      "name": "function on column is non-sargable",
+      "query": "SELECT Id FROM Orders WHERE YEAR(OrderDate) = 2024",
+      "expected": [],
+      "warnings": ["NON_SARGABLE"]
+    },
+    {
+      "name": "leading wildcard is non-sargable, prefix LIKE is a range",
+      "query": "SELECT Id FROM Customers WHERE Name LIKE '%son' AND Country LIKE 'I%'",
+      "expected": [{ "table": "Customers", "key": ["Country"], "include": ["Id", "Name"] }],
+      "warnings": ["LEADING_WILDCARD"]
+    },
+    {
+      "name": "SELECT * disables covering",
+      "query": "SELECT * FROM Orders WHERE CustomerId = 1",
+      "expected": [{ "table": "Orders", "key": ["CustomerId"], "include": [] }],
+      "warnings": ["SELECT_STAR"]
+    },
+    {
+      "name": "correlated EXISTS subquery",
+      "query": "SELECT c.Name FROM Customers c WHERE EXISTS (SELECT 1 FROM Orders o WHERE o.CustomerId = c.Id AND o.Status = 'Open')",
+      "expected": [
+        { "table": "Customers", "key": ["Id"], "include": ["Name"] },
+        { "table": "Orders", "key": ["Status", "CustomerId"], "include": [] }
+      ]
+    },
+    {
+      "name": "UPDATE gets seek keys only",
+      "query": "UPDATE Orders SET Status = 'Closed' WHERE CustomerId = 3 AND OrderDate < @d",
+      "expected": [{ "table": "Orders", "key": ["CustomerId", "OrderDate"], "include": [] }]
+    },
+    {
+      "name": "DELETE with alias",
+      "query": "DELETE o FROM Orders o WHERE o.Status = 'Draft'",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": [] }]
+    },
+    {
+      "name": "CTE names are not tables",
+      "query": "WITH x AS (SELECT CustomerId FROM Orders WHERE Status = 'A') SELECT CustomerId FROM x WHERE CustomerId = 1",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": ["CustomerId"] }]
+    },
+    {
+      "name": "left-prefix proposals on one table are consolidated",
+      "query": "SELECT Id FROM Orders WHERE Status = 'A'; SELECT Total FROM Orders WHERE Status = 'A' AND OrderDate > @d;",
+      "expected": [{ "table": "Orders", "key": ["Status", "OrderDate"], "include": ["Total", "Id"] }]
+    },
+    {
+      "name": "schema resolves unqualified columns across a join",
+      "schema": "shop",
+      "query": "SELECT Name FROM Orders o JOIN Customers c ON c.Id = o.CustomerId WHERE Country = 'ID'",
+      "expected": [
+        { "table": "Orders", "key": ["CustomerId"], "include": [], "covered": "full" },
+        { "table": "Customers", "key": ["Country", "Id"], "include": ["Name"] }
+      ]
+    },
+    {
+      "name": "no schema: ambiguous unqualified column is skipped",
+      "query": "SELECT o.Id FROM Orders o JOIN Customers c ON c.Id = o.CustomerId WHERE Country = 'ID'",
+      "expected": [
+        { "table": "Orders", "key": ["CustomerId"], "include": ["Id"] },
+        { "table": "Customers", "key": ["Id"], "include": [] }
+      ],
+      "warnings": ["AMBIGUOUS_COLUMN"]
+    },
+    {
+      "name": "existing index fully covers the proposal",
+      "schema": "shop",
+      "query": "SELECT Total FROM Orders WHERE CustomerId = 1",
+      "expected": [{ "table": "Orders", "key": ["CustomerId"], "include": ["Total"], "covered": "full" }]
+    },
+    {
+      "name": "existing index covers the key but not the include",
+      "schema": "shop",
+      "query": "SELECT Total FROM Orders WHERE Status = 'Open'",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": ["Total"], "covered": "partial" }]
+    },
+    {
+      "name": "clustered primary key covers lookups by id",
+      "schema": "shop",
+      "query": "SELECT Name, Country FROM Customers WHERE Id = 5",
+      "expected": [{ "table": "Customers", "key": ["Id"], "include": ["Name", "Country"], "covered": "full" }]
+    },
+    {
+      "name": "primary key columns are not repeated in include",
+      "schema": "shop",
+      "query": "SELECT Id, Total FROM Orders WHERE OrderDate > @d",
+      "expected": [{ "table": "Orders", "key": ["OrderDate"], "include": ["Total"] }]
+    }
+  ]
+}

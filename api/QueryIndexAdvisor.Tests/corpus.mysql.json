@@ -1,0 +1,108 @@
+{
+  "dialect": "MYSQL",
+  "schemas": {
+    "shop": {
+      "dialect": "MYSQL",
+      "tables": {
+        "orders": {
+          "tableName": "orders",
+          "columns": {
+            "id": { "name": "id", "dataType": "int", "isNullable": false, "isPrimaryKey": true },
+            "customer_id": { "name": "customer_id", "dataType": "int", "isNullable": false, "isPrimaryKey": false },
+            "created_at": { "name": "created_at", "dataType": "datetime", "isNullable": false, "isPrimaryKey": false },
+            "status": { "name": "status", "dataType": "varchar(20)", "isNullable": false, "isPrimaryKey": false },
+            "total": { "name": "total", "dataType": "decimal(18,2)", "isNullable": false, "isPrimaryKey": false },
+            "note": { "name": "note", "dataType": "text", "isNullable": true, "isPrimaryKey": false }
+          },
+          "indexes": [
+            { "indexName": "PK_orders", "isUnique": true, "keyColumns": ["id"], "includeColumns": [] },
+            { "indexName": "idx_customer", "isUnique": false, "keyColumns": ["customer_id"], "includeColumns": [] }
+          ]
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "payload columns are appended to the key",
+      "query": "SELECT id, total FROM orders WHERE customer_id = ?",
+      "expected": [{ "table": "orders", "key": ["customer_id"], "include": ["id", "total"],
+        "ddl": [
+          "-- MySQL has no INCLUDE; payload columns are appended to the key so the index covers the query.",
+          "CREATE INDEX `IX_orders_customer_id`",
+          "ON `orders` (`customer_id`, `id`, `total`);"
+        ] }]
+    },
+    {
+      "name": "backticks, schema-qualified table, range",
+      "query": "SELECT `o`.`total` FROM `shop`.`orders` AS o WHERE o.status = 'paid' AND o.created_at >= ? ORDER BY o.created_at DESC",
+      "expected": [{ "table": "orders", "key": ["status", "created_at"], "include": ["total"],
+        "ddl": [
+          "-- MySQL has no INCLUDE; payload columns are appended to the key so the index covers the query.",
+          "CREATE INDEX `IX_orders_status_created_at`",
+          "ON `shop`.`orders` (`status`, `created_at`, `total`);"
+        ] }]
+    },
+    {
+      "name": "leading wildcard",
+      "query": "SELECT id FROM customers WHERE name LIKE '%son'",
+      "expected": [],
+      "warnings": ["LEADING_WILDCARD"]
+    },
+    {
+      "name": "DATE() on the column is non-sargable",
+      "query": "SELECT id FROM orders WHERE DATE(created_at) = '2024-01-01'",
+      "expected": [],
+      "warnings": ["NON_SARGABLE"]
+    },
+    {
+      "name": "join",
+      "query": "SELECT o.id, c.name FROM orders o INNER JOIN customers c ON c.id = o.customer_id WHERE c.country = 'ID'",
+      "expected": [
+        { "table": "orders", "key": ["customer_id"], "include": ["id"] },
+        { "table": "customers", "key": ["country", "id"], "include": ["name"] }
+      ]
+    },
+    {
+      "name": "DELETE",
+      "query": "DELETE FROM orders WHERE status = 'draft'",
+      "expected": [{ "table": "orders", "key": ["status"], "include": [] }]
+    },
+    {
+      "name": "TEXT columns cannot be appended; the PK rides along implicitly",
+      "schema": "shop",
+      "query": "SELECT id, total, note FROM orders WHERE status = 'paid'",
+      "expected": [{ "table": "orders", "key": ["status"], "include": ["total", "note"],
+        "ddl": [
+          "-- MySQL has no INCLUDE; payload columns are appended to the key so the index covers the query.",
+          "-- Not covered: note (TEXT/BLOB/JSON columns need a prefix length to be indexed).",
+          "CREATE INDEX `IX_orders_status`",
+          "ON `orders` (`status`, `total`);"
+        ] }]
+    },
+    {
+      "name": "InnoDB clustered primary key covers lookups by id",
+      "schema": "shop",
+      "query": "SELECT total FROM orders WHERE id = ?",
+      "expected": [{ "table": "orders", "key": ["id"], "include": ["total"], "covered": "full" }]
+    },
+    {
+      "name": "secondary index covers the PK column implicitly",
+      "schema": "shop",
+      "query": "SELECT id FROM orders WHERE customer_id = ?",
+      "expected": [{ "table": "orders", "key": ["customer_id"], "include": [], "covered": "full" }]
+    },
+    {
+      "name": "existing index is widened with ALTER TABLE",
+      "schema": "shop",
+      "query": "SELECT total FROM orders WHERE customer_id = ?",
+      "expected": [{ "table": "orders", "key": ["customer_id"], "include": ["total"], "covered": "partial",
+        "ddl": [
+          "-- MySQL has no INCLUDE; payload columns are appended to the key so the index covers the query.",
+          "ALTER TABLE `orders`",
+          "  DROP INDEX `idx_customer`,",
+          "  ADD INDEX `idx_customer` (`customer_id`, `total`);"
+        ] }]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="QueryIndexAdvisor.Api/QueryIndexAdvisor.Api.csproj" />
+  <Project Path="QueryIndexAdvisor.Tests/QueryIndexAdvisor.Tests.csproj" />
+</Solution>

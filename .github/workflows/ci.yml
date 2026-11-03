@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      # Includes the benchmark corpus (PRD §1 accuracy KPI).
+      - run: dotnet test
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Builds both images and checks the API container answers; nothing is pushed.
+      - run: docker compose build
+      - run: |
+          docker compose up -d
+          for i in $(seq 1 30); do curl -fsS http://localhost:5080/health && curl -fsS -o /dev/null http://localhost:3001 && exit 0; sleep 2; done
+          docker compose logs; exit 1

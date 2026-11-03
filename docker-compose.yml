@@ -1,0 +1,18 @@
+services:
+  api:
+    build: ./api
+    ports:
+      - "5080:8080"
+    environment:
+      Cors__AllowedOrigins__0: http://localhost:3001
+
+  web:
+    build:
+      context: ./web
+      args:
+        # Baked in at build time; the browser calls the API directly.
+        NEXT_PUBLIC_API_URL: http://localhost:5080
+    ports:
+      - "3001:3000" # host 3001 -> container 3000
+    depends_on:
+      - api

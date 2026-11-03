@@ -1,0 +1,196 @@
+{
+  "queryType": "LINQ",
+  "schemas": {
+    "shop": {
+      "dialect": "SQLSERVER",
+      "tables": {
+        "dbo.Orders": {
+          "tableName": "Orders",
+          "columns": {
+            "Id": { "name": "Id", "dataType": "int", "isNullable": false, "isPrimaryKey": true },
+            "CustomerId": { "name": "CustomerId", "dataType": "int", "isNullable": false, "isPrimaryKey": false },
+            "OrderDate": { "name": "OrderDate", "dataType": "datetime2", "isNullable": false, "isPrimaryKey": false },
+            "Status": { "name": "Status", "dataType": "varchar(20)", "isNullable": false, "isPrimaryKey": false },
+            "Total": { "name": "Total", "dataType": "decimal(18,2)", "isNullable": false, "isPrimaryKey": false }
+          },
+          "indexes": [
+            { "indexName": "IX_Orders_CustomerId_OrderDate", "isUnique": false, "keyColumns": ["CustomerId", "OrderDate"], "includeColumns": ["Total"] }
+          ]
+        },
+        "dbo.Customers": {
+          "tableName": "Customers",
+          "columns": {
+            "Id": { "name": "Id", "dataType": "int", "isNullable": false, "isPrimaryKey": true },
+            "Name": { "name": "Name", "dataType": "nvarchar(200)", "isNullable": false, "isPrimaryKey": false },
+            "Country": { "name": "Country", "dataType": "char(2)", "isNullable": false, "isPrimaryKey": false }
+          },
+          "indexes": []
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "equality with projection",
+      "query": "db.Orders.Where(o => o.CustomerId == customerId).Select(o => new { o.Id, o.Total }).ToList();",
+      "expected": [{ "table": "Orders", "key": ["CustomerId"], "include": ["Id", "Total"] }]
+    },
+    {
+      "name": "equality before range",
+      "query": "db.Orders.Where(o => o.OrderDate >= from && o.Status == \"Paid\").Select(o => o.Id).ToList();",
+      "expected": [{ "table": "Orders", "key": ["Status", "OrderDate"], "include": ["Id"] }]
+    },
+    {
+      "name": "OrderByDescending extends the key",
+      "query": "db.Orders.Where(o => o.CustomerId == id).OrderByDescending(o => o.OrderDate).Select(o => o.Id)",
+      "expected": [{ "table": "Orders", "key": ["CustomerId", "OrderDate DESC"], "include": ["Id"] }]
+    },
+    {
+      "name": "no projection loads full entities",
+      "query": "db.Orders.Where(o => o.Status == \"Open\").ToList();",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": [] }],
+      "warnings": ["NO_PROJECTION"]
+    },
+    {
+      "name": "Count needs no columns",
+      "query": "var n = await db.Orders.CountAsync(o => o.Status == \"Open\");",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": [] }]
+    },
+    {
+      "name": "ToLower is non-sargable",
+      "query": "db.Customers.Where(c => c.Email.ToLower() == email).Select(c => c.Id).FirstOrDefault();",
+      "expected": [],
+      "warnings": ["NON_SARGABLE"]
+    },
+    {
+      "name": "date part is non-sargable",
+      "query": "db.Orders.Where(o => o.OrderDate.Year == 2024).Select(o => o.Id).ToList();",
+      "expected": [],
+      "warnings": ["NON_SARGABLE"]
+    },
+    {
+      "name": "StartsWith is a range",
+      "query": "db.Customers.Where(c => c.Name.StartsWith(prefix)).Select(c => c.Id).ToList();",
+      "expected": [{ "table": "Customers", "key": ["Name"], "include": ["Id"] }]
+    },
+    {
+      "name": "string Contains is a leading wildcard",
+      "query": "db.Customers.Where(c => c.Name.Contains(term)).Select(c => c.Id).ToList();",
+      "expected": [],
+      "warnings": ["LEADING_WILDCARD"]
+    },
+    {
+      "name": "list Contains is IN",
+      "query": "db.Orders.Where(o => statuses.Contains(o.Status)).Select(o => o.Id).ToList();",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": ["Id"] }]
+    },
+    {
+      "name": "method-syntax Join with filtered inner",
+      "query": "db.Orders.Where(o => o.Status == \"Paid\").Join(db.Customers.Where(c => c.Country == \"ID\"), o => o.CustomerId, c => c.Id, (o, c) => new { o.Total, c.Name }).ToList();",
+      "expected": [
+        { "table": "Orders", "key": ["Status", "CustomerId"], "include": ["Total"] },
+        { "table": "Customers", "key": ["Country", "Id"], "include": ["Name"] }
+      ]
+    },
+    {
+      "name": "query syntax with join, where and orderby",
+      "query": "var q = from o in db.Orders\n        join c in db.Customers on o.CustomerId equals c.Id\n        where c.Country == \"ID\" && o.OrderDate > since\n        orderby o.OrderDate descending\n        select new { o.Id, c.Name };",
+      "expected": [
+        { "table": "Orders", "key": ["CustomerId", "OrderDate"], "include": ["Id"] },
+        { "table": "Customers", "key": ["Country", "Id"], "include": ["Name"] }
+      ]
+    },
+    {
+      "name": "reference navigation joins on CustomerId = Id",
+      "query": "db.Orders.Where(o => o.Customer.Country == \"ID\").Select(o => new { o.Id, o.Customer.Name }).ToList();",
+      "expected": [
+        { "table": "Orders", "key": ["CustomerId"], "include": ["Id"] },
+        { "table": "Customers", "key": ["Country", "Id"], "include": ["Name"] }
+      ]
+    },
+    {
+      "name": "collection navigation Any",
+      "query": "db.Customers.Where(c => c.Orders.Any(o => o.Status == \"Open\")).Select(c => c.Name).ToList();",
+      "expected": [
+        { "table": "Customers", "key": ["Id"], "include": ["Name"] },
+        { "table": "Orders", "key": ["Status", "CustomerId"], "include": [] }
+      ]
+    },
+    {
+      "name": "correlated subquery through the DbContext",
+      "query": "db.Customers.Where(c => db.Orders.Any(o => o.CustomerId == c.Id && o.Total > 100)).Select(c => c.Name).ToList();",
+      "expected": [
+        { "table": "Customers", "key": ["Id"], "include": ["Name"] },
+        { "table": "Orders", "key": ["CustomerId", "Total"], "include": [] }
+      ]
+    },
+    {
+      "name": "bool columns and negation",
+      "query": "db.Orders.Where(o => o.IsPaid && !o.IsDeleted).Select(o => o.Id).ToList();",
+      "expected": [{ "table": "Orders", "key": ["IsPaid", "IsDeleted"], "include": ["Id"] }]
+    },
+    {
+      "name": "null check is an equality",
+      "query": "db.Orders.Where(o => o.ShippedAt == null && o.CustomerId == id).Select(o => o.Id).ToList();",
+      "expected": [{ "table": "Orders", "key": ["ShippedAt", "CustomerId"], "include": ["Id"] }]
+    },
+    {
+      "name": "|| on one column behaves like IN",
+      "query": "db.Orders.Where(o => o.Status == \"A\" || o.Status == \"B\").Select(o => o.Id).ToList();",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": ["Id"] }]
+    },
+    {
+      "name": "|| across columns is not seekable",
+      "query": "db.Orders.Where(o => o.Status == \"A\" || o.CustomerId == 3).Select(o => o.Id).ToList();",
+      "expected": [],
+      "warnings": ["OR_PREDICATE"]
+    },
+    {
+      "name": "Set<T>() resolves to the schema table and is covered",
+      "schema": "shop",
+      "query": "db.Set<Order>().Where(o => o.CustomerId == 1).Select(o => o.Total).ToList();",
+      "expected": [{ "table": "Orders", "key": ["CustomerId"], "include": ["Total"], "covered": "full" }]
+    },
+    {
+      "name": "lookup by primary key is covered",
+      "schema": "shop",
+      "query": "db.Customers.Where(c => c.Id == id).Select(c => c.Name).FirstOrDefault();",
+      "expected": [{ "table": "Customers", "key": ["Id"], "include": ["Name"], "covered": "full" }]
+    },
+    {
+      "name": "AsEnumerable stops SQL translation",
+      "query": "db.Orders.Where(o => o.Status == \"A\").AsEnumerable().Where(o => o.Total > 5).Select(o => o.Id).ToList();",
+      "expected": [{ "table": "Orders", "key": ["Status"], "include": [] }],
+      "warnings": ["CLIENT_EVAL", "NO_PROJECTION"]
+    },
+    {
+      "name": "statement snippet with async terminal and DTO projection",
+      "query": "var list = await _context.Orders.AsNoTracking().Where(x => x.CustomerId == id).OrderBy(x => x.OrderDate).Select(x => new OrderDto { Id = x.Id }).ToListAsync();",
+      "expected": [{ "table": "Orders", "key": ["CustomerId", "OrderDate"], "include": ["Id"] }]
+    },
+    {
+      "name": "GroupBy with aggregate",
+      "query": "db.Orders.Where(o => o.Status == \"Paid\").GroupBy(o => o.CustomerId).Select(g => new { g.Key, Total = g.Sum(o => o.Total) }).ToList();",
+      "expected": [{ "table": "Orders", "key": ["Status", "CustomerId"], "include": ["Total"] }]
+    },
+    {
+      "name": "schema tells navigation from column",
+      "schema": "shop",
+      "query": "db.Orders.Where(o => o.Customer.Country == \"ID\").Select(o => o.Total).ToList();",
+      "expected": [
+        { "table": "Orders", "key": ["CustomerId"], "include": ["Total"], "covered": "full" },
+        { "table": "Customers", "key": ["Country", "Id"], "include": [] }
+      ]
+    },
+    {
+      "name": "query inside a minimal API lambda",
+      "query": "app.MapGet(\"/orders/{id}\", (int id, AppDb db) => db.Orders.Where(o => o.CustomerId == id).Select(o => o.Total).ToList());",
+      "expected": [{ "table": "Orders", "key": ["CustomerId"], "include": ["Total"] }]
+    },
+    {
+      "name": "in-memory collections are not tables",
+      "query": "var names = request.Items.Where(i => i.Price > 10).Select(i => i.Name).ToList();",
+      "expected": []
+    }
+  ]
+}
